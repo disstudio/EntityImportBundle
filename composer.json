@@ -1,0 +1,52 @@
+{
+    "name": "disstudio/entity-import-bundle",
+    "description": "The EntityImportBundle allows for easy entity migration from legacy database",
+    "type": "symfony-bundle",
+    "license": "proprietary",
+    "authors": [
+    ],
+    "autoload": {
+        "psr-4": {
+            "Disstudio\\EntityImport\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Tests\\Disstudio\\EntityImport\\": [
+                "tests/"
+            ]
+        }
+    },
+    "require": {
+        "php": "^8.2",
+        "doctrine/orm": "^2.18 || ^3.3",
+        "symfony/dependency-injection": "^6.4 || ^7.3",
+        "symfony/framework-bundle": "^6.4 || ^7.3",
+        "symfony/property-access": "^6.4 || ^7.3",
+        "symfony/serializer": "^6.4 || ^7.3"
+    },
+    "require-dev": {
+        "phpstan/phpstan": "^1.12",
+        "phpstan/phpstan-doctrine": "^1.5",
+        "phpunit/phpunit": "^10.5"
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "php-http/discovery": true,
+            "symfony/flex": true,
+            "symfony/runtime": true,
+            "symfony/thanks": false
+        }
+    },
+    "extra": {
+        "symfony": {
+            "require": "^7.3"
+        },
+        "branch-alias": {
+            "dev-main": "1.0-dev"
+        }
+    },
+    "prefer-stable": true,
+    "minimum-stability": "alpha"
+}
