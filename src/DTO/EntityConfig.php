@@ -12,7 +12,6 @@ use LogicException;
  */
 final readonly class EntityConfig
 {
-    /** @phpstan-ignore-next-line */
     public static function createFromArrayConfig(array $config): self
     {
         $legacyTable = $config['legacyTable'] ?? throw new LogicException('Migration map is not properly configured.');

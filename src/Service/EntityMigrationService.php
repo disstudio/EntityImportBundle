@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 namespace Disstudio\EntityImport\Service;
 
+use Disstudio\EntityImport\DependencyInjection\DisstudioEntityImportExtension;
+use Disstudio\EntityImport\DTO\ChunkResult;
+use Disstudio\EntityImport\DTO\EntityConfig;
+use Disstudio\EntityImport\Entity\LegacyMigrationStatus;
+use Disstudio\EntityImport\Factory\FactoryInterface;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
@@ -28,7 +33,7 @@ final readonly class EntityMigrationService
     public function __construct(
         private ManagerRegistry $doctrine,
         private EntityManagerInterface $entityManager,
-        #[AutowireLocator(LegacyMigrationFactoryPass::FACTORY_SERVICE_TAG)]
+        #[AutowireLocator(DisstudioEntityImportExtension::FACTORY_SERVICE_TAG)]
         private ContainerInterface $factoryLocator,
         /** @var MigrationMapShape[] $migrationMap */
         #[Autowire(param: 'legacy_migration_entity_map')]
