@@ -25,7 +25,7 @@ final class MigrateDataCommand
     public function __construct(
         private EntityMigrationService $entityMigrationService,
         /** @var MigrationMapShape[] $migrationMap */
-        #[Autowire(param: 'legacy_migration_entity_map')]
+        #[Autowire(param: 'disstudio_entity_import.entity_map')]
         private array $migrationMap,
     ) {
     }

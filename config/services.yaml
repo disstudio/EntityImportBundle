@@ -1,0 +1,12 @@
+services:
+  _defaults:
+    autowire: true      # Автоматично прокидає залежності в конструктор
+    autoconfigure: true # Автоматично реєструє класи як команди, слухачі тощо
+
+  # Реєструємо всі класи з бандла як сервіси
+  Disstudio\EntityImport\:
+    resource: '../src/'
+    exclude:
+      - '../src/DependencyInjection/'
+      - '../src/Entity/'
+      - '../src/DisstudioEntityImportBundle.php'

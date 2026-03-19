@@ -36,9 +36,9 @@ final readonly class EntityMigrationService
         #[AutowireLocator(DisstudioEntityImportExtension::FACTORY_SERVICE_TAG)]
         private ContainerInterface $factoryLocator,
         /** @var MigrationMapShape[] $migrationMap */
-        #[Autowire(param: 'legacy_migration_entity_map')]
+        #[Autowire(param: 'disstudio_entity_import.entity_map')]
         private array $migrationMap,
-        #[Autowire(param: 'legacy_migration_chunk_size')]
+        #[Autowire(param: 'disstudio_entity_import.chunk_size')]
         private int $chunkSize,
     ) {
     }
