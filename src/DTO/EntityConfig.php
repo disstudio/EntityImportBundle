@@ -14,16 +14,16 @@ final readonly class EntityConfig
 {
     public static function createFromArrayConfig(array $config): self
     {
-        $legacyTable = $config['legacyTable'] ?? throw new LogicException('Migration map is not properly configured.');
+        $legacyTable = $config['source_table'] ?? throw new LogicException('Migration map is not properly configured.');
         /** @var class-string $targetEntityClass */
-        $targetEntityClass = $config['targetEntity'] ?? throw new LogicException('Migration map is not properly configured.');
+        $targetEntityClass = $config['target_entity'] ?? throw new LogicException('Migration map is not properly configured.');
         $factoryServiceId = $config['factory'] ?? throw new LogicException('Migration map is not properly configured.');
 
         $legacyPk = 'id';
-        $legacyIdentifier = $config['legacyIdentifier'] ?? 'id';
-        $targetIdentifier = $config['targetIdentifier'] ?? 'id';
+        $legacyIdentifier = $config['source_identifier'] ?? 'id';
+        $targetIdentifier = $config['target_identifier'] ?? 'id';
 
-        $foreignKeys = $config['foreignKeys'] ?? [];
+        $foreignKeys = $config['foreign_keys'] ?? [];
 
         return new self(
             $legacyTable,

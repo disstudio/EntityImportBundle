@@ -24,6 +24,8 @@ class DisstudioEntityImportExtension extends Extension
 
         $container->setParameter('disstudio_entity_import.entity_map', $config['entity_map']);
         $container->setParameter('disstudio_entity_import.chunk_size', $config['chunk_size']);
+        $container->setParameter('disstudio_entity_import.source_connection', $config['source_connection']);
+        $container->setParameter('disstudio_entity_import.target_connection', $config['target_connection']);
 
         $container
             ->registerForAutoconfiguration(FactoryInterface::class)

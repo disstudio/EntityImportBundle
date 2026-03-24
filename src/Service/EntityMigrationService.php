@@ -7,12 +7,13 @@ namespace Disstudio\EntityImport\Service;
 use Disstudio\EntityImport\DependencyInjection\DisstudioEntityImportExtension;
 use Disstudio\EntityImport\DTO\ChunkResult;
 use Disstudio\EntityImport\DTO\EntityConfig;
-use Disstudio\EntityImport\Entity\LegacyMigrationStatus;
+use Disstudio\EntityImport\Entity\MigrationStatus;
 use Disstudio\EntityImport\Factory\FactoryInterface;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use InvalidArgumentException;
+use PHPUnit\Framework\Assert;
 use Psr\Container\ContainerExceptionInterface;
 use Psr\Container\ContainerInterface;
 use Psr\Container\NotFoundExceptionInterface;
@@ -20,8 +21,8 @@ use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
 
 /**
- * @phpstan-type MigrationMapShape array{'legacyTable': string,
- *     'legacyIdentifier'?: string,
+ * @phpstan-type MigrationMapShape array{'sourceTable': string,
+ *     'sourceIdentifier'?: string,
  *     'targetIdentifier'?: string,
  *     'targetEntity': string,
  *     'factory': string,
@@ -30,9 +31,12 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
  */
 final readonly class EntityMigrationService
 {
+    private EntityManagerInterface $entityManager;
+    
+    private Connection $sourceConnection;
+
     public function __construct(
         private ManagerRegistry $doctrine,
-        private EntityManagerInterface $entityManager,
         #[AutowireLocator(DisstudioEntityImportExtension::FACTORY_SERVICE_TAG)]
         private ContainerInterface $factoryLocator,
         /** @var MigrationMapShape[] $migrationMap */
@@ -40,50 +44,56 @@ final readonly class EntityMigrationService
         private array $migrationMap,
         #[Autowire(param: 'disstudio_entity_import.chunk_size')]
         private int $chunkSize,
+        #[Autowire(param: 'disstudio_entity_import.source_connection')]
+        string $sourceConnectionName,
+        #[Autowire(param: 'disstudio_entity_import.target_connection')]
+        string $targetConnectionName,
     ) {
+        $this->entityManager = $this->doctrine->getManager($targetConnectionName);
+
+        /** @var Connection $sourceConnection */
+        $sourceConnection = $this->doctrine->getConnection($sourceConnectionName);
+        $this->sourceConnection = $sourceConnection;
     }
 
     public function migrateEntityChunk(string $migrationKey): ChunkResult
     {
         $entityConfig = $this->getEntityConfig($migrationKey);
 
-        /** @var Connection $legacyConn */
-        $legacyConn = $this->doctrine->getConnection('legacy');
-
-        $legacyQueryBuilder = $legacyConn->createQueryBuilder()
+        $sourceQueryBuilder = $this->sourceConnection->createQueryBuilder()
             ->select(sprintf('%s.*', $entityConfig->getLegacyTable()))
             ->from($entityConfig->getLegacyTable())
             ->setMaxResults($this->chunkSize)
             ->orderBy(sprintf('%s.%s', $entityConfig->getLegacyTable(), $entityConfig->getLegacyPk()));
 
-        $legacyMigrationStatus = $this->getLegacyMigrationStatus($migrationKey);
-        if ($legacyMigrationStatus) {
-            $legacyQueryBuilder
+        $sourceMigrationStatus = $this->getLegacyMigrationStatus($migrationKey);
+        if ($sourceMigrationStatus) {
+            $sourceQueryBuilder
                 ->andWhere(sprintf('%s.%s > :last_id', $entityConfig->getLegacyTable(), $entityConfig->getLegacyPk()))
-                ->setParameter('last_id', $legacyMigrationStatus->getLastId());
+                ->setParameter('last_id', $sourceMigrationStatus->getLastId());
         } else {
-            $legacyMigrationStatus = new LegacyMigrationStatus($migrationKey);
-            $this->entityManager->persist($legacyMigrationStatus);
+            $sourceMigrationStatus = new MigrationStatus($migrationKey);
+            $this->entityManager->persist($sourceMigrationStatus);
         }
 
         $fkTargetEntities = [];
         $fkFieldAliases = [];
 
-        foreach ($entityConfig->getForeignKeys() as $legacyFkField => $fkMigrationKey) {
+        foreach ($entityConfig->getForeignKeys() as $sourceFkField => $fkMigrationKey) {
             $fkEntityConfig = $this->getEntityConfig($fkMigrationKey);
             $fkFieldAlias = sprintf('%s_%s', $fkMigrationKey, $fkEntityConfig->getLegacyIdentifier());
             $fkFieldAliases[$fkMigrationKey] = $fkFieldAlias;
 
-            $legacyQueryBuilder->leftJoin(
+            $sourceQueryBuilder->leftJoin(
                 $entityConfig->getLegacyTable(),
                 $fkEntityConfig->getLegacyTable(),
                 $fkMigrationKey,
-                $legacyQueryBuilder->expr()->eq(
-                    sprintf('%s.%s', $entityConfig->getLegacyTable(), $legacyFkField),
+                $sourceQueryBuilder->expr()->eq(
+                    sprintf('%s.%s', $entityConfig->getLegacyTable(), $sourceFkField),
                     sprintf('%s.%s', $fkMigrationKey, $fkEntityConfig->getLegacyPk())
                 )
             );
-            $legacyQueryBuilder->addSelect(sprintf(
+            $sourceQueryBuilder->addSelect(sprintf(
                 '%s.%s AS %s',
                 $fkMigrationKey,
                 $fkEntityConfig->getLegacyIdentifier(),
@@ -93,14 +103,14 @@ final readonly class EntityMigrationService
 
         $targetEntityFactory = $this->getFactory($entityConfig->getFactoryServiceId());
 
-        $legacyQueryResult = $legacyQueryBuilder->fetchAllAssociative();
-        /** @var int[]|string[] $legacyIds */
-        $legacyIds = array_column($legacyQueryResult, $entityConfig->getLegacyIdentifier());
+        $sourceQueryResult = $sourceQueryBuilder->fetchAllAssociative();
+        /** @var int[]|string[] $sourceIds */
+        $sourceIds = array_column($sourceQueryResult, $entityConfig->getLegacyIdentifier());
 
         $targetEntityArray = $this->getTargetEntityArray(
             $entityConfig->getTargetEntityClass(),
             $entityConfig->getTargetIdentifier(),
-            $legacyIds
+            $sourceIds
         );
 
         foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
@@ -110,7 +120,7 @@ final readonly class EntityMigrationService
                 $fkEntityConfig->getTargetEntityClass(),
                 $fkEntityConfig->getTargetIdentifier(),
                 /** @phpstan-ignore-next-line */
-                array_unique(array_column($legacyQueryResult, $fkFieldAliases[$fkMigrationKey]))
+                array_unique(array_column($sourceQueryResult, $fkFieldAliases[$fkMigrationKey]))
             );
         }
 
@@ -120,7 +130,7 @@ final readonly class EntityMigrationService
         $rowsSkipped = 0;
 
         /** @var scalar[] $row */
-        foreach ($legacyQueryResult as $row) {
+        foreach ($sourceQueryResult as $row) {
             /* @phpstan-ignore-next-line */
             $targetEntity = $targetEntityArray[$row[$entityConfig->getLegacyIdentifier()]] ?? null;
             $lastLegacyEntityId = $row[$entityConfig->getLegacyPk()];
@@ -145,7 +155,7 @@ final readonly class EntityMigrationService
         $this->entityManager->flush();
 
         if ($lastLegacyEntityId !== null) {
-            $legacyMigrationStatus->setLastId((int) $lastLegacyEntityId);
+            $sourceMigrationStatus->setLastId((int) $lastLegacyEntityId);
             $this->entityManager->flush();
         }
 
@@ -161,10 +171,10 @@ final readonly class EntityMigrationService
         return EntityConfig::createFromArrayConfig($this->migrationMap[$migrationKey]);
     }
 
-    private function getLegacyMigrationStatus(string $migrationKey): ?LegacyMigrationStatus
+    private function getLegacyMigrationStatus(string $migrationKey): ?MigrationStatus
     {
         return $this->entityManager
-            ->getRepository(LegacyMigrationStatus::class)
+            ->getRepository(MigrationStatus::class)
             ->findOneBy(['key' => $migrationKey]);
     }
 
@@ -184,14 +194,14 @@ final readonly class EntityMigrationService
 
     /**
      * @param class-string $targetEntityClass
-     * @param int[]|string[] $legacyIds
+     * @param int[]|string[] $sourceIds
      *
      * @return object[]
      */
     private function getTargetEntityArray(
         string $targetEntityClass,
         string $targetIdentifier,
-        array $legacyIds,
+        array $sourceIds,
     ): array {
         $targetEntityRepository = $this->entityManager->getRepository($targetEntityClass);
 
@@ -199,7 +209,7 @@ final readonly class EntityMigrationService
         return $targetEntityRepository
             ->createQueryBuilder('t', 't.' . $targetIdentifier)
             ->where(sprintf('t.%s IN (:ids)', $targetIdentifier))
-            ->setParameter('ids', $legacyIds)
+            ->setParameter('ids', $sourceIds)
             ->getQuery()
             ->getResult();
     }

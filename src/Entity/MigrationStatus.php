@@ -8,8 +8,8 @@ use Doctrine\DBAL\Types\Types;
 use Doctrine\ORM\Mapping as ORM;
 
 #[ORM\Entity]
-#[ORM\Table(name: 'app_legacy_migration_status')]
-class LegacyMigrationStatus
+#[ORM\Table(name: 'disstudio_migration_status')]
+class MigrationStatus
 {
     #[ORM\Id]
     #[ORM\GeneratedValue]
