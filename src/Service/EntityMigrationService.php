@@ -32,7 +32,7 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
 final readonly class EntityMigrationService
 {
     private EntityManagerInterface $entityManager;
-    
+
     private Connection $sourceConnection;
 
     public function __construct(
@@ -131,20 +131,32 @@ final readonly class EntityMigrationService
 
         /** @var scalar[] $row */
         foreach ($sourceQueryResult as $row) {
+            /** @var int|string $sourceId */
+            $sourceId = $row[$entityConfig->getLegacyIdentifier()];
             /* @phpstan-ignore-next-line */
-            $targetEntity = $targetEntityArray[$row[$entityConfig->getLegacyIdentifier()]] ?? null;
+            $targetEntity = $targetEntityArray[$sourceId] ?? null;
             $lastLegacyEntityId = $row[$entityConfig->getLegacyPk()];
 
             if ($targetEntity === null) {
                 // Add fk entities to result target rows
                 foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
-                    /** @var int|string $fkTargetIdentifier */
-                    $fkTargetIdentifier = $row[$fkFieldAliases[$fkMigrationKey]];
-                    $row[$fkMigrationKey] = $fkTargetEntities[$fkMigrationKey][$fkTargetIdentifier] ?? null;
+                    /** @var int|string $fkTargetId */
+                    $fkTargetId = $row[$fkFieldAliases[$fkMigrationKey]];
+                    $row[$fkMigrationKey] = $fkTargetEntities[$fkMigrationKey][$fkTargetId] ?? null;
                 }
 
                 $targetEntity = $targetEntityFactory->createFromArray($row);
                 $this->entityManager->persist($targetEntity);
+
+                // handle the case if entity fk references to entity itself
+                foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
+                    if (
+                        $fkMigrationKey === $migrationKey &&
+                        !array_key_exists($sourceId, $fkTargetEntities[$fkMigrationKey])
+                    ) {
+                        $fkTargetEntities[$fkMigrationKey][$sourceId] = $targetEntity;
+                    }
+                }
 
                 ++$rowsMigrated;
             } else {
