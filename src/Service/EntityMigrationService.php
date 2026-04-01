@@ -9,6 +9,7 @@ use Disstudio\EntityImport\DTO\ChunkResult;
 use Disstudio\EntityImport\DTO\EntityConfig;
 use Disstudio\EntityImport\Entity\MigrationStatus;
 use Disstudio\EntityImport\Factory\FactoryInterface;
+use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
@@ -26,7 +27,7 @@ use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
  *     'targetIdentifier'?: string,
  *     'targetEntity': string,
  *     'factory': string,
- *     'foreignKeys': array{string}
+ *     'foreignKeys': array{string, array{'local_identifier', 'target_key', 'join_table', 'foreign_identifier'}}
  * }
  */
 final readonly class EntityMigrationService
@@ -56,7 +57,7 @@ final readonly class EntityMigrationService
         $this->sourceConnection = $sourceConnection;
     }
 
-    public function migrateEntityChunk(string $migrationKey): ChunkResult
+    public function migrateEntityChunk(string $migrationKey, bool $ignoreProgress = false): ChunkResult
     {
         $entityConfig = $this->getEntityConfig($migrationKey);
 
@@ -66,7 +67,7 @@ final readonly class EntityMigrationService
             ->setMaxResults($this->chunkSize)
             ->orderBy(sprintf('%s.%s', $entityConfig->getLegacyTable(), $entityConfig->getLegacyPk()));
 
-        $sourceMigrationStatus = $this->getLegacyMigrationStatus($migrationKey);
+        $sourceMigrationStatus = $ignoreProgress ? null : $this->getLegacyMigrationStatus($migrationKey);
         if ($sourceMigrationStatus) {
             $sourceQueryBuilder
                 ->andWhere(sprintf('%s.%s > :last_id', $entityConfig->getLegacyTable(), $entityConfig->getLegacyPk()))
@@ -79,33 +80,37 @@ final readonly class EntityMigrationService
         $fkTargetEntities = [];
         $fkFieldAliases = [];
 
-        foreach ($entityConfig->getForeignKeys() as $sourceFkField => $fkMigrationKey) {
-            $fkEntityConfig = $this->getEntityConfig($fkMigrationKey);
+        foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
+            $sourceFkField = $fkConfig->getLocalIdentifier();
+            $fkEntityConfig = $this->getEntityConfig($fkConfig->getTargetKey());
             $fkFieldAlias = sprintf('%s_%s', $fkMigrationKey, $fkEntityConfig->getLegacyIdentifier());
             $fkFieldAliases[$fkMigrationKey] = $fkFieldAlias;
 
-            $sourceQueryBuilder->leftJoin(
-                $entityConfig->getLegacyTable(),
-                $fkEntityConfig->getLegacyTable(),
-                $fkMigrationKey,
-                $sourceQueryBuilder->expr()->eq(
-                    sprintf('%s.%s', $entityConfig->getLegacyTable(), $sourceFkField),
-                    sprintf('%s.%s', $fkMigrationKey, $fkEntityConfig->getLegacyPk())
-                )
-            );
-            $sourceQueryBuilder->addSelect(sprintf(
-                '%s.%s AS %s',
-                $fkMigrationKey,
-                $fkEntityConfig->getLegacyIdentifier(),
-                $fkFieldAlias
-            ));
+            if (null === $fkConfig->getJoinTable()) {
+                // one-to-many relation (without join table)
+                $sourceQueryBuilder->leftJoin(
+                    $entityConfig->getLegacyTable(),
+                    $fkEntityConfig->getLegacyTable(),
+                    $fkMigrationKey,
+                    $sourceQueryBuilder->expr()->eq(
+                        sprintf('%s.%s', $entityConfig->getLegacyTable(), $sourceFkField),
+                        sprintf('%s.%s', $fkMigrationKey, $fkEntityConfig->getLegacyPk())
+                    )
+                );
+                $sourceQueryBuilder->addSelect(sprintf(
+                    '%s.%s AS %s',
+                    $fkMigrationKey,
+                    $fkEntityConfig->getLegacyIdentifier(),
+                    $fkFieldAlias
+                ));
+            }
         }
 
         $targetEntityFactory = $this->getFactory($entityConfig->getFactoryServiceId());
 
         $sourceQueryResult = $sourceQueryBuilder->fetchAllAssociative();
         /** @var int[]|string[] $sourceIds */
-        $sourceIds = array_column($sourceQueryResult, $entityConfig->getLegacyIdentifier());
+        $sourceIds = array_unique(array_column($sourceQueryResult, $entityConfig->getLegacyIdentifier()));
 
         $targetEntityArray = $this->getTargetEntityArray(
             $entityConfig->getTargetEntityClass(),
@@ -113,15 +118,59 @@ final readonly class EntityMigrationService
             $sourceIds
         );
 
-        foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
-            $fkEntityConfig = $this->getEntityConfig($fkMigrationKey);
+        foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
+            $fkEntityConfig = $this->getEntityConfig($fkConfig->getTargetKey());
 
-            $fkTargetEntities[$fkMigrationKey] = $this->getTargetEntityArray(
-                $fkEntityConfig->getTargetEntityClass(),
-                $fkEntityConfig->getTargetIdentifier(),
-                /** @phpstan-ignore-next-line */
-                array_unique(array_column($sourceQueryResult, $fkFieldAliases[$fkMigrationKey]))
-            );
+            if (null === $fkConfig->getJoinTable()) {
+                // one-to-many relation (without join table)
+                $fkTargetEntities[$fkMigrationKey] = $this->getTargetEntityArray(
+                    $fkEntityConfig->getTargetEntityClass(),
+                    $fkEntityConfig->getTargetIdentifier(),
+                    /** @phpstan-ignore-next-line */
+                    array_unique(array_column($sourceQueryResult, $fkFieldAliases[$fkMigrationKey]))
+                );
+            } else {
+                // many-to-many relation (with join table)
+                $relationQueryBuilder = $this->sourceConnection->createQueryBuilder()
+                    ->from($fkConfig->getJoinTable())
+                    ->leftJoin(
+                        $fkConfig->getJoinTable(),
+                        $fkEntityConfig->getLegacyTable(),
+                        $fkMigrationKey,
+                        $sourceQueryBuilder->expr()->eq(
+                            sprintf('%s.%s', $fkConfig->getJoinTable(), $fkConfig->getForeignIdentifier()),
+                            sprintf('%s.%s', $fkMigrationKey, $fkEntityConfig->getLegacyPk())
+                        )
+                    )
+                    ->leftJoin(
+                        $fkConfig->getJoinTable(),
+                        $entityConfig->getLegacyTable(),
+                        't',
+                        $sourceQueryBuilder->expr()->eq(
+                            sprintf('%s.%s', $fkConfig->getJoinTable(), $fkConfig->getLocalIdentifier()),
+                            sprintf('t.%s', $entityConfig->getLegacyPk())
+                        )
+                    )
+                    ->select(
+                        sprintf('t.%s AS p_id', $entityConfig->getLegacyIdentifier()),
+                        sprintf('%s.%s AS f_id', $fkMigrationKey, $fkEntityConfig->getLegacyIdentifier()),
+                    )
+                    ->where(sprintf('t.%s IN(:ids)', $entityConfig->getLegacyIdentifier()))
+                    ->setParameter('ids', $sourceIds, ArrayParameterType::STRING);
+
+                /** @var array{array{pk: string|int, fk: string|int}} $relationData */
+                $relationData = $relationQueryBuilder->fetchAllAssociative();
+                $relationIds = array_unique(array_column($relationData, 'f_id'));
+                $relationTargetEntityArray = $this->getTargetEntityArray(
+                    $fkEntityConfig->getTargetEntityClass(),
+                    $fkEntityConfig->getTargetIdentifier(),
+                    /** @phpstan-ignore-next-line */
+                    $relationIds
+                );
+                foreach ($relationData as $result) {
+                    $fkTargetEntities[$fkMigrationKey][$result['p_id']][] = $relationTargetEntityArray[$result['f_id']];
+                }
+            }
         }
 
         /** @var int|null $lastLegacyEntityId */
@@ -133,16 +182,26 @@ final readonly class EntityMigrationService
         foreach ($sourceQueryResult as $row) {
             /** @var int|string $sourceId */
             $sourceId = $row[$entityConfig->getLegacyIdentifier()];
+
             /* @phpstan-ignore-next-line */
             $targetEntity = $targetEntityArray[$sourceId] ?? null;
             $lastLegacyEntityId = $row[$entityConfig->getLegacyPk()];
 
             if ($targetEntity === null) {
                 // Add fk entities to result target rows
-                foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
-                    /** @var int|string $fkTargetId */
-                    $fkTargetId = $row[$fkFieldAliases[$fkMigrationKey]];
-                    $row[$fkMigrationKey] = $fkTargetEntities[$fkMigrationKey][$fkTargetId] ?? null;
+                foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
+                    if (null === $fkConfig->getJoinTable()) {
+                        /** @var int|string $fkTargetId */
+                        $fkTargetId = $row[$fkFieldAliases[$fkMigrationKey]];
+                        $row[$fkMigrationKey] = $fkTargetEntities[$fkMigrationKey][$fkTargetId] ?? null;
+                    } else {
+                        $sourceRelationPrimaryId = $row[$entityConfig->getLegacyIdentifier()];
+                        if (array_key_exists($sourceRelationPrimaryId, $fkTargetEntities[$fkMigrationKey])) {
+                            $row[$fkMigrationKey] = $fkTargetEntities[$fkMigrationKey][$sourceRelationPrimaryId];
+                        } else {
+                            $row[$fkMigrationKey] = [];
+                        }
+                    }
                 }
 
                 $targetEntity = $targetEntityFactory->createFromArray($row);
@@ -152,6 +211,7 @@ final readonly class EntityMigrationService
                 foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
                     if (
                         $fkMigrationKey === $migrationKey &&
+                        (null === $fkConfig->getJoinTable()) &&
                         !array_key_exists($sourceId, $fkTargetEntities[$fkMigrationKey])
                     ) {
                         $fkTargetEntities[$fkMigrationKey][$sourceId] = $targetEntity;

@@ -14,16 +14,19 @@ final readonly class EntityConfig
 {
     public static function createFromArrayConfig(array $config): self
     {
-        $legacyTable = $config['source_table'] ?? throw new LogicException('Migration map is not properly configured.');
+        $legacyTable = $config['source_table'] ?? throw new LogicException('Entity_map.source_table is not properly configured.');
         /** @var class-string $targetEntityClass */
-        $targetEntityClass = $config['target_entity'] ?? throw new LogicException('Migration map is not properly configured.');
-        $factoryServiceId = $config['factory'] ?? throw new LogicException('Migration map is not properly configured.');
+        $targetEntityClass = $config['target_entity'] ?? throw new LogicException('Entity_map.target_entity is not properly configured.');
+        $factoryServiceId = $config['factory'] ?? throw new LogicException('Entity_map.factory is not properly configured.');
 
         $legacyPk = 'id';
         $legacyIdentifier = $config['source_identifier'] ?? 'id';
         $targetIdentifier = $config['target_identifier'] ?? 'id';
 
-        $foreignKeys = $config['foreign_keys'] ?? [];
+        $foreignKeys = [];
+        foreach($config['foreign_keys'] ?? [] as $key => $value) {
+            $foreignKeys[$key] = ForeignKeyConfig::createFromArrayConfig($value);
+        }
 
         return new self(
             $legacyTable,
@@ -38,7 +41,7 @@ final readonly class EntityConfig
 
     /**
      * @param class-string $targetEntityClass
-     * @param string[] $foreignKeys
+     * @param array<string, ForeignKeyConfig> $foreignKeys
      */
     public function __construct(
         private string $legacyTable,
@@ -85,7 +88,7 @@ final readonly class EntityConfig
     }
 
     /**
-     * @return string[]
+     * @return array<string, ForeignKeyConfig>
      */
     public function getForeignKeys(): array
     {

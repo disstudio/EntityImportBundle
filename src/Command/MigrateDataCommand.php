@@ -39,6 +39,11 @@ final class MigrateDataCommand
             shortcut: 'k',
         )]
         ?string $key = null,
+        #[Option(
+            description: 'Ignore previous progress and start from the first record',
+            name: 'ignore-progress',
+        )]
+        bool $ignoreProgress = false,
     ): int {
         $migrationKey = $key;
 
@@ -57,8 +62,10 @@ final class MigrateDataCommand
                 $rowsMigrated = 0;
                 $rowsSkipped = 0;
 
+                $ignoreProgressCurrent = $ignoreProgress;
                 do {
-                    $result = $this->entityMigrationService->migrateEntityChunk($migrationKeyItem);
+                    $result = $this->entityMigrationService->migrateEntityChunk($migrationKeyItem, $ignoreProgressCurrent);
+                    $ignoreProgressCurrent = false;
 
                     $section?->overwrite(
                         sprintf(
