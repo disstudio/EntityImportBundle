@@ -8,6 +8,7 @@ use Disstudio\EntityImport\DependencyInjection\DisstudioEntityImportExtension;
 use Disstudio\EntityImport\DTO\ChunkResult;
 use Disstudio\EntityImport\DTO\EntityConfig;
 use Disstudio\EntityImport\Entity\MigrationStatus;
+use Disstudio\EntityImport\Exception\FactoryException;
 use Disstudio\EntityImport\Factory\FactoryInterface;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\Connection;
@@ -21,15 +22,6 @@ use Psr\Container\NotFoundExceptionInterface;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\DependencyInjection\Attribute\AutowireLocator;
 
-/**
- * @phpstan-type MigrationMapShape array{'sourceTable': string,
- *     'sourceIdentifier'?: string,
- *     'targetIdentifier'?: string,
- *     'targetEntity': string,
- *     'factory': string,
- *     'foreignKeys': array{string, array{'local_identifier', 'target_key', 'join_table', 'foreign_identifier'}}
- * }
- */
 final readonly class EntityMigrationService
 {
     private EntityManagerInterface $entityManager;
@@ -40,9 +32,7 @@ final readonly class EntityMigrationService
         private ManagerRegistry $doctrine,
         #[AutowireLocator(DisstudioEntityImportExtension::FACTORY_SERVICE_TAG)]
         private ContainerInterface $factoryLocator,
-        /** @var MigrationMapShape[] $migrationMap */
-        #[Autowire(param: 'disstudio_entity_import.entity_map')]
-        private array $migrationMap,
+        private EntityConfigProvider $entityConfigProvider,
         #[Autowire(param: 'disstudio_entity_import.chunk_size')]
         private int $chunkSize,
         #[Autowire(param: 'disstudio_entity_import.source_connection')]
@@ -59,7 +49,7 @@ final readonly class EntityMigrationService
 
     public function migrateEntityChunk(string $migrationKey, bool $ignoreProgress = false): ChunkResult
     {
-        $entityConfig = $this->getEntityConfig($migrationKey);
+        $entityConfig = $this->entityConfigProvider->getByKey($migrationKey);
 
         $sourceQueryBuilder = $this->sourceConnection->createQueryBuilder()
             ->select(sprintf('%s.*', $entityConfig->getLegacyTable()))
@@ -82,7 +72,7 @@ final readonly class EntityMigrationService
 
         foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
             $sourceFkField = $fkConfig->getLocalIdentifier();
-            $fkEntityConfig = $this->getEntityConfig($fkConfig->getTargetKey());
+            $fkEntityConfig = $this->entityConfigProvider->getByKey($fkConfig->getTargetKey());
             $fkFieldAlias = sprintf('%s_%s', $fkMigrationKey, $fkEntityConfig->getLegacyIdentifier());
             $fkFieldAliases[$fkMigrationKey] = $fkFieldAlias;
 
@@ -106,8 +96,6 @@ final readonly class EntityMigrationService
             }
         }
 
-        $targetEntityFactory = $this->getFactory($entityConfig->getFactoryServiceId());
-
         $sourceQueryResult = $sourceQueryBuilder->fetchAllAssociative();
         /** @var int[]|string[] $sourceIds */
         $sourceIds = array_unique(array_column($sourceQueryResult, $entityConfig->getLegacyIdentifier()));
@@ -119,7 +107,7 @@ final readonly class EntityMigrationService
         );
 
         foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
-            $fkEntityConfig = $this->getEntityConfig($fkConfig->getTargetKey());
+            $fkEntityConfig = $this->entityConfigProvider->getByKey($fkConfig->getTargetKey());
 
             if (null === $fkConfig->getJoinTable()) {
                 // one-to-many relation (without join table)
@@ -178,6 +166,8 @@ final readonly class EntityMigrationService
         $rowsMigrated = 0;
         $rowsSkipped = 0;
 
+        $targetEntityFactory = $this->getFactory($entityConfig->getFactoryServiceId());
+
         /** @var scalar[] $row */
         foreach ($sourceQueryResult as $row) {
             /** @var int|string $sourceId */
@@ -204,7 +194,11 @@ final readonly class EntityMigrationService
                     }
                 }
 
-                $targetEntity = $targetEntityFactory->createFromArray($row);
+                try {
+                    $targetEntity = $targetEntityFactory->createFromArray($row);
+                } catch (\Throwable $t) {
+                    throw FactoryException::fromThrowable($t);
+                }
                 $this->entityManager->persist($targetEntity);
 
                 // handle the case if entity fk references to entity itself
@@ -232,15 +226,6 @@ final readonly class EntityMigrationService
         }
 
         return new ChunkResult($rowsMigrated, $rowsSkipped);
-    }
-
-    private function getEntityConfig(string $migrationKey): EntityConfig
-    {
-        if (!array_key_exists($migrationKey, $this->migrationMap)) {
-            throw new InvalidArgumentException(sprintf('Migration key "%s" does not exist.', $migrationKey));
-        }
-
-        return EntityConfig::createFromArrayConfig($this->migrationMap[$migrationKey]);
     }
 
     private function getLegacyMigrationStatus(string $migrationKey): ?MigrationStatus

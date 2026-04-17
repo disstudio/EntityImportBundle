@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Disstudio\EntityImport\Command;
 
+use Disstudio\EntityImport\DTO\EntityConfig;
+use Disstudio\EntityImport\Service\EntityConfigProvider;
 use Disstudio\EntityImport\Service\EntityMigrationService;
+use Disstudio\EntityImport\Service\TableTruncateService;
 use Exception;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
@@ -12,11 +15,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
-use Symfony\Component\DependencyInjection\Attribute\Autowire;
 
-/**
- * @phpstan-import-type MigrationMapShape from EntityMigrationService
- */
 #[AsCommand(
     name: 'app:migrate-data',
 )]
@@ -24,9 +23,8 @@ final class MigrateDataCommand
 {
     public function __construct(
         private EntityMigrationService $entityMigrationService,
-        /** @var MigrationMapShape[] $migrationMap */
-        #[Autowire(param: 'disstudio_entity_import.entity_map')]
-        private array $migrationMap,
+        private TableTruncateService $tableTruncateService,
+        private EntityConfigProvider $entityConfigProvider,
     ) {
     }
 
@@ -44,15 +42,36 @@ final class MigrateDataCommand
             name: 'ignore-progress',
         )]
         bool $ignoreProgress = false,
+        #[Option(
+            description: 'Truncate table (clear all records) before processing',
+            name: 'truncate',
+        )]
+        bool $truncate = false,
     ): int {
         $migrationKey = $key;
 
-        /** @var string[] $migrationKeyArray */
-        $migrationKeyArray = ($migrationKey !== null) ? [$migrationKey] : array_keys($this->migrationMap);
+        /** @var EntityConfig[] $entityConfigArray */
+        $entityConfigArray = ($migrationKey !== null) ?
+            [$migrationKey => $this->entityConfigProvider->getByKey($migrationKey)] :
+            $this->entityConfigProvider->getEntityConfigArray();
+
+        if ($truncate) {
+            if ($migrationKey !== null) {
+                $io->error('Cannot specify both --key and --truncate options');
+                return Command::INVALID;
+            }
+
+            foreach (array_reverse($entityConfigArray) as $entityConfig) {
+                $io->write(sprintf('Truncating table for %s...', $entityConfig->getTargetEntityClass()));
+                $this->tableTruncateService->truncateTargetTable($entityConfig);
+                $io->write('Success');
+                $io->newLine();
+            }
+        }
 
         try {
-            foreach ($migrationKeyArray as $migrationKeyItem) {
-                $io->writeln(sprintf('Migrating %s:', $migrationKeyItem));
+            foreach ($entityConfigArray as $migrationKey => $entityConfig) {
+                $io->writeln(sprintf('Migrating %s:', $migrationKey));
 
                 $section = null;
                 if ($output instanceof ConsoleOutputInterface) {
@@ -64,7 +83,7 @@ final class MigrateDataCommand
 
                 $ignoreProgressCurrent = $ignoreProgress;
                 do {
-                    $result = $this->entityMigrationService->migrateEntityChunk($migrationKeyItem, $ignoreProgressCurrent);
+                    $result = $this->entityMigrationService->migrateEntityChunk($migrationKey, $ignoreProgressCurrent);
                     $ignoreProgressCurrent = false;
 
                     $section?->overwrite(
