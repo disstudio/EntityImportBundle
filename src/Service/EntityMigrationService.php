@@ -202,9 +202,9 @@ final readonly class EntityMigrationService
                 $this->entityManager->persist($targetEntity);
 
                 // handle the case if entity fk references to entity itself
-                foreach ($entityConfig->getForeignKeys() as $fkMigrationKey) {
+                foreach ($entityConfig->getForeignKeys() as $fkMigrationKey => $fkConfig) {
                     if (
-                        $fkMigrationKey === $migrationKey &&
+                        $fkConfig->getTargetKey() === $migrationKey &&
                         (null === $fkConfig->getJoinTable()) &&
                         !array_key_exists($sourceId, $fkTargetEntities[$fkMigrationKey])
                     ) {
